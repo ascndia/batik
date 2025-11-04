@@ -1,0 +1,58 @@
+model:
+  model_type: SiT-B/4
+  input_size: 32
+  num_classes: 20
+  use_cfg: True
+  z_dims: [768]
+  encoder_depth: 8
+  enc_type: dinov2-vit-b
+  block_kwargs:
+    fused_attn: False
+    qk_norm: False
+
+optimizer:
+  type: AdamW
+  use_8bit: True # Use 8-bit AdamW optimizer to save memory 
+  lr: 0.00001 # 1e-5
+  weight_decay: 0.01   
+  betas: [0.9, 0.999]  
+  eps: 1e-8
+
+scheduler:
+  type: "cosine_with_warmup"
+  warmup_steps: 10000 # 2.5% of total_steps
+  total_steps: 400000 # macth train.max_steps
+
+meanflow: 
+  path_type: linear
+  time_sampler: logit_normal  
+  time_mu: -0.4
+  time_sigma: 1.0
+  ratio_r_not_equal_t: 0.25
+  adaptive_p: 1.0
+  weighting: adaptive
+  proj_coeff: 0.5
+  label_dropout_prob: 0.1
+
+train:
+  max_steps: 400000
+  epoch: 1400
+  batch_size: 256
+  resolution: 256
+  latent_size: 32
+  save_interval: 50000
+  log_interval: 100
+  mixed_precision: bf16
+  gradient_accumulation_steps: 1
+  sample_interval: 5000
+  allow_tf32: True
+  seed: 42
+  num_workers: 4
+  max_grad_norm: 1.0
+
+misc:
+  data_dir: /opt/data/batik-sd-vae/
+  output_dir: /opt/ai/batik-mean-flow/output/
+  report_to: wandb
+  wandb_project: batik-mean-flow
+  experiment_name: dinov2-vit-b-sit-xl-2-label_dropout_prob:0.1-proj_coeff:0.5
