@@ -1,5 +1,6 @@
 model:
   model_type: SiT-B/4
+  patch_size: 4
   input_size: 32
   num_classes: 20
   use_cfg: True
@@ -37,7 +38,7 @@ meanflow:
 train:
   max_steps: 400000
   epoch: 1400
-  batch_size: 256
+  batch_size: 16
   resolution: 256
   latent_size: 32
   save_interval: 50000
@@ -55,4 +56,4 @@ misc:
   output_dir: /opt/ai/batik-mean-flow/output/
   report_to: wandb
   wandb_project: batik-mean-flow
-  experiment_name: dinov2-vit-b-sit-xl-2-label_dropout_prob:0.1-proj_coeff:0.5
+  experiment_name: dinov2-vit-b-sit-b-4-label_dropout_prob:0.1-proj_coeff:0.5

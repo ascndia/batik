@@ -199,7 +199,19 @@ def main(args=None):
                     for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
                         raw_image_ = preprocess_raw_image(raw_image, encoder_type)
                         z = encoder.forward_features(raw_image_)
-                        if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']                                                  
+                        if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+
+                        patch_size = getattr(model_cfg, 'patch_size', 2) 
+                        H_sit = W_sit = latent_size // patch_size 
+                        L_sit = H_sit * W_sit # e.g., 8 * 8 = 64
+
+                        if z.shape[1] != L_sit:
+                            B, L_dino, D = z.shape 
+                            H_dino = W_dino = int(L_dino**0.5) 
+                            z = z.reshape(B, H_dino, W_dino, D).permute(0, 3, 1, 2)
+                            z = F.adaptive_avg_pool2d(z, (H_sit, W_sit)) 
+                            z = z.permute(0, 2, 3, 1).reshape(B, L_sit, D)
+                        
                         zs_target.append(z)
 
             model_kwargs = {
