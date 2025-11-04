@@ -1,11 +1,13 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-from torch.func import jvp
-
+from torch.autograd.functional import jvp
+from accelerate import Accelerator
 class MeanFlow:
     def __init__(
         self,
+        unwrapped_model,
+        accelerator: Accelerator=None,
         path_type="linear",
         weighting="uniform",
         # meanflow specific params
@@ -18,7 +20,8 @@ class MeanFlow:
         # REPA (Projection Loss) params
         proj_coeff=0.5,
         ):
-        
+        self.unwrapped_model = unwrapped_model
+        self.accelerator = accelerator
         self.path_type = path_type
         self.weighting = weighting
         self.time_sampler = time_sampler
@@ -120,18 +123,25 @@ class MeanFlow:
 
         # --- Mean Flow JVP Calculation ---
         def fn_current(z, cur_r, cur_t):
-            model_out = model(z, cur_r, cur_t, **model_kwargs)
+            model_out = self.unwrapped_model(z, cur_r, cur_t, **model_kwargs)
             # Handle model output consistently
             if isinstance(model_out, (list, tuple)):
-                return model_out[0] # Return just `u`
-            else:
-                return model_out    # This is `u`
-            
-        primals = (z_t, r, t)
-        tangents = (v_t, torch.zeros_like(r), torch.ones_like(t))
-        
-        _, dudt = jvp(fn_current, primals, tangents)
-        u_target = v_t - time_diff * dudt
+                return model_out[0] # Return just u
+            return model_out
+
+        # Prepare primals/tangents once
+        primals = (z_t.float(), r.float(), t.float())
+        tangents = (v_t.float(), torch.zeros_like(r).float(), torch.ones_like(t).float())
+
+        # Compute JVP exactly once with autograd enabled (forward-mode); detach result to avoid retaining graph.
+        with torch.enable_grad():
+            _, dudt = jvp(fn_current, primals, tangents)
+
+        # Detach and cast to model output dtype; delete temporaries to free memory sooner.
+        dudt = dudt.detach().to(u.dtype)
+        del primals, tangents
+
+        u_target = (v_t - time_diff * dudt).detach()
                 
         # --- 1. Calculate Mean Flow Loss ---
         error = u - u_target.detach()

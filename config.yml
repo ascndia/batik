@@ -38,17 +38,17 @@ meanflow:
 train:
   max_steps: 400000
   epoch: 1400
-  batch_size: 16
+  batch_size: 8
   resolution: 256
   latent_size: 32
   save_interval: 50000
   log_interval: 100
-  mixed_precision: bf16
+  mixed_precision: fp16
   gradient_accumulation_steps: 1
   sample_interval: 5000
   allow_tf32: True
   seed: 42
-  num_workers: 4
+  num_workers: 8
   max_grad_norm: 1.0
 
 misc:

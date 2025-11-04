@@ -90,6 +90,7 @@ def main(args=None):
 
     model = build_model(model_cfg, z_dims= z_dims)
     model = model.to(device)
+    unwrapped_model = accelerator.unwrap_model(model)
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-mse").to(device)
     requires_grad(ema, False)
@@ -140,6 +141,7 @@ def main(args=None):
 
     mf_config = config.meanflow
     mf = MeanFlow(
+        unwrapped_model=unwrapped_model,
         path_type=mf_config.path_type,
         weighting=mf_config.weighting,
         time_sampler=mf_config.time_sampler,
@@ -150,6 +152,7 @@ def main(args=None):
         label_dropout_prob=mf_config.label_dropout_prob,
         proj_coeff=mf_config.proj_coeff,
     )
+    mf.set_unwrapped_model(unwrapped_model)
 
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
