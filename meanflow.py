@@ -1,13 +1,11 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-from torch.autograd.functional import jvp
-from accelerate import Accelerator
+from torch.func import jvp
+
 class MeanFlow:
     def __init__(
         self,
-        unwrapped_model,
-        accelerator: Accelerator=None,
         path_type="linear",
         weighting="uniform",
         # meanflow specific params
@@ -20,8 +18,6 @@ class MeanFlow:
         # REPA (Projection Loss) params
         proj_coeff=0.5,
         ):
-        self.unwrapped_model = unwrapped_model
-        self.accelerator = accelerator
         self.path_type = path_type
         self.weighting = weighting
         self.time_sampler = time_sampler
@@ -95,9 +91,9 @@ class MeanFlow:
             y_clone[dropout_mask] = num_classes
             model_kwargs['y'] = y_clone
             
-        zs_target = model_kwargs.pop('zs_target', None) if self.use_repa_loss else None
-        
-        use_repa = self.use_repa_loss and zs_target is not None
+        zs_target_from_kwargs = model_kwargs.pop('zs_target', None)
+        use_repa = self.use_repa_loss and zs_target_from_kwargs is not None
+        zs_target = zs_target_from_kwargs if use_repa else None
 
         r, t = self.sample_time_steps(batch_size, device)
         noises = torch.randn_like(images)
@@ -112,36 +108,30 @@ class MeanFlow:
         # --- Model Forward Pass ---
         if use_repa:
             # Model MUST return (u, zs_tilde) if use_repa is True
-            u, zs_tilde = model(z_t, r, t, **model_kwargs)
+            u, zs_tilde = model(z_t, r, t, compute_zs=True, **model_kwargs)
             if not isinstance(zs_tilde, (list, tuple)):
                  raise ValueError("Model did not return a list/tuple of hidden states (zs_tilde) for REPA loss.")
             if len(zs_tilde) != len(zs_target):
                 raise ValueError(f"Mismatch in REPA layers: expected {len(zs_target)}, model returned {len(zs_tilde)}.")
         else:
-            u = model(z_t, r, t, **model_kwargs)
-            zs_tilde = None # Not used
+            model_out = model(z_t, r, t, compute_zs=False, **model_kwargs)
+            if isinstance(model_out, (list, tuple)): u = model_out[0]
+            else: u = model_out
+            zs_tilde = None
 
-        # --- Mean Flow JVP Calculation ---
         def fn_current(z, cur_r, cur_t):
-            model_out = self.unwrapped_model(z, cur_r, cur_t, **model_kwargs)
-            # Handle model output consistently
+            model_out = model(z, cur_r, cur_t, compute_zs=False, **model_kwargs)
             if isinstance(model_out, (list, tuple)):
-                return model_out[0] # Return just u
-            return model_out
-
-        # Prepare primals/tangents once
-        primals = (z_t.float(), r.float(), t.float())
-        tangents = (v_t.float(), torch.zeros_like(r).float(), torch.ones_like(t).float())
-
-        # Compute JVP exactly once with autograd enabled (forward-mode); detach result to avoid retaining graph.
-        with torch.enable_grad():
-            _, dudt = jvp(fn_current, primals, tangents)
-
-        # Detach and cast to model output dtype; delete temporaries to free memory sooner.
-        dudt = dudt.detach().to(u.dtype)
-        del primals, tangents
-
-        u_target = (v_t - time_diff * dudt).detach()
+                return model_out[0] 
+            else:
+                return model_out
+            
+        primals = (z_t, r, t)
+        tangents = (v_t, torch.zeros_like(r), torch.ones_like(t))
+        
+        _, dudt = jvp(fn_current, primals, tangents)
+        dudt = dudt.detach()
+        u_target = v_t - time_diff * dudt
                 
         # --- 1. Calculate Mean Flow Loss ---
         error = u - u_target.detach()
@@ -170,5 +160,5 @@ class MeanFlow:
 
         # --- 3. Combine Losses ---
         total_loss = mean_flow_loss + (self.proj_coeff * proj_loss)
-        
-        return total_loss, mean_flow_loss, proj_loss
+
+        return total_loss, mean_flow_loss.detach(), proj_loss.detach()

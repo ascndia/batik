@@ -90,7 +90,6 @@ def main(args=None):
 
     model = build_model(model_cfg, z_dims= z_dims)
     model = model.to(device)
-    unwrapped_model = accelerator.unwrap_model(model)
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-mse").to(device)
     requires_grad(ema, False)
@@ -141,7 +140,6 @@ def main(args=None):
 
     mf_config = config.meanflow
     mf = MeanFlow(
-        unwrapped_model=unwrapped_model,
         path_type=mf_config.path_type,
         weighting=mf_config.weighting,
         time_sampler=mf_config.time_sampler,
@@ -152,7 +150,6 @@ def main(args=None):
         label_dropout_prob=mf_config.label_dropout_prob,
         proj_coeff=mf_config.proj_coeff,
     )
-    mf.set_unwrapped_model(unwrapped_model)
 
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -160,7 +157,14 @@ def main(args=None):
     set_seed(train_cfg.seed)
     model.train()
     global_step = 0
-    infinite_dataloader = itertools.cycle(train_dataloader)
+    # infinite_dataloader = itertools.cycle(train_dataloader)
+    
+    def dataloader_generator(dataloader):
+        while True:
+            for batch in dataloader:
+                yield batch
+
+    infinite_dataloader = dataloader_generator(train_dataloader)
 
     progress_bar = tqdm(
         total=train_cfg.max_steps,
@@ -186,6 +190,10 @@ def main(args=None):
     xT_sample = torch.randn((sample_batch_size, 4, latent_size, latent_size), device=device)
     
     print("--- Starting Training ---")
+
+    use_repa = mf_config.proj_coeff > 0.0
+
+
     while global_step < train_cfg.max_steps:
         
         with accelerator.accumulate(model):
@@ -199,27 +207,27 @@ def main(args=None):
                 x = sample_posterior(x_moments, latents_scale=latents_scale, latents_bias=latents_bias)
                 zs_target = []
                 with accelerator.autocast():
-                    for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
-                        raw_image_ = preprocess_raw_image(raw_image, encoder_type)
-                        z = encoder.forward_features(raw_image_)
-                        if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+                    if use_repa:
+                        for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
+                            raw_image_ = preprocess_raw_image(raw_image, encoder_type)
+                            z = encoder.forward_features(raw_image_)
+                            if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
 
-                        patch_size = getattr(model_cfg, 'patch_size', 2) 
-                        H_sit = W_sit = latent_size // patch_size 
-                        L_sit = H_sit * W_sit # e.g., 8 * 8 = 64
+                            patch_size = getattr(model_cfg, 'patch_size', 2) 
+                            H_sit = W_sit = latent_size // patch_size 
+                            L_sit = H_sit * W_sit # e.g., 8 * 8 = 64
 
-                        if z.shape[1] != L_sit:
-                            B, L_dino, D = z.shape 
-                            H_dino = W_dino = int(L_dino**0.5) 
-                            z = z.reshape(B, H_dino, W_dino, D).permute(0, 3, 1, 2)
-                            z = F.adaptive_avg_pool2d(z, (H_sit, W_sit)) 
-                            z = z.permute(0, 2, 3, 1).reshape(B, L_sit, D)
-                        
-                        zs_target.append(z)
-
+                            if z.shape[1] != L_sit:
+                                B, L_dino, D = z.shape 
+                                H_dino = W_dino = int(L_dino**0.5) 
+                                z = z.reshape(B, H_dino, W_dino, D).permute(0, 3, 1, 2)
+                                z = F.adaptive_avg_pool2d(z, (H_sit, W_sit)) 
+                                z = z.permute(0, 2, 3, 1).reshape(B, L_sit, D)
+                            
+                            zs_target.append(z)
             model_kwargs = {
                 "y": y,
-                "zs_target": zs_target
+                "zs_target": zs_target if use_repa else None
             }
 
             loss, mean_flow_loss, proj_loss = mf.compute_loss(model, x, model_kwargs)
